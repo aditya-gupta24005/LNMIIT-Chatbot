@@ -34,7 +34,6 @@ try:
 except Exception:
     _HAS_TRAFILATURA = False
 
-# ============ Config ===============
 USER_AGENT = "lnmiit-ask-scraper/1.0 (+https://lnmiit.ac.in/)"
 DEFAULT_DELAY = 1.0  # seconds between requests (polite)
 CHUNK_SIZE_CHARS = 2000
@@ -44,7 +43,6 @@ PDF_DIR = os.path.join(OUTPUT_DIR, "pdfs")
 RAW_DIR = os.path.join(OUTPUT_DIR, "raw")
 VISITED_PATH = os.path.join(OUTPUT_DIR, "visited.json")
 ALLOWED_SCHEMES = ("http", "https")
-# ===================================
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PDF_DIR, exist_ok=True)
@@ -108,14 +106,13 @@ def allowed_by_robots(rp, url):
     return rp.can_fetch(USER_AGENT, url)
 
 
-# Change this function in your script
 def fetch_url(url, timeout=15):
     try:
         # Add verify=False to this call
         r = session.get(url, timeout=timeout, verify=False) 
         r.raise_for_status()
         
-        # Requests will show a warning when verify=False, you can disable it
+        # Requests will show a warning when verify=False
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         return r
