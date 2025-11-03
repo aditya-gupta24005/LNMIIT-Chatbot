@@ -1,5 +1,4 @@
 # indexer.py  (FAISS + sentence-transformers)
-from nt import device_encoding
 import os, json
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -7,11 +6,13 @@ import numpy as np
 import faiss
 from tqdm import tqdm
 import torch
-DATA_DIR = Path("/Users/adityagupta/Developer/LNMIIT-Chatbot/backend/data/processed")
-INDEX_DIR = Path("/Users/adityagupta/Developer/LNMIIT-Chatbot/backend/data/indexed_data")
+from pathlib import Path
+BASE_DIR = Path(__file__).parent.parent # This is backend/
+DATA_DIR = BASE_DIR / "data" / "processed"
+INDEX_DIR = BASE_DIR / "data" / "indexed_data"
 INDEX_DIR.mkdir(exist_ok=True)
 
-EMBED_MODEL = "all-MiniLM-L6-v2"   # fast & good default; change if you want
+EMBED_MODEL = "all-MiniLM-L6-v2"   
 EMB_DIM = 384                      # matches all-MiniLM-L6-v2
 
 def load_documents():
@@ -41,7 +42,7 @@ def build_index(batch_size=64):
     if not docs:
         print("No documents found in", DATA_DIR)
         return
-    device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_availabl()) else "cpu"
+    device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
     print("Using device:", device)
 
     model = SentenceTransformer(EMBED_MODEL,device=device)
