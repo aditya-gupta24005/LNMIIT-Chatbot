@@ -9,6 +9,6 @@ class Message(BaseModel):
 @app.post("/chat")
 def chat_endpoint(msg: Message):
     user_input = msg.message
-    # Dummy response (replace with your model/logic)
+    # Dummy response
     return {"response": f"You said: {user_input}"}
 

@@ -2,8 +2,8 @@
 import faiss, json, numpy as np
 from sentence_transformers import SentenceTransformer
 from pathlib import Path
-
-INDEX_DIR = Path("/Users/adityagupta/Developer/LNMIIT-Chatbot/backend/data/indexed_data")
+BASE_DIR = Path(__file__).parent.parent # This is backend/
+INDEX_DIR = BASE_DIR / "data" / "indexed_data"
 model = SentenceTransformer("all-MiniLM-L6-v2")
 index = faiss.read_index(str(INDEX_DIR / "faiss.index"))
 with open(INDEX_DIR / "meta.json", "r", encoding="utf-8") as f:

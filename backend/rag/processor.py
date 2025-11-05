@@ -5,8 +5,10 @@ import re
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
 
-RAW_DIR = "/Users/adityagupta/Developer/LNMIIT-Chatbot/backend/data/raw"
-PROCESSED_DIR = "/Users/adityagupta/Developer/LNMIIT-Chatbot/backend/data/processed"
+from pathlib import Path
+BASE_DIR = Path(__file__).parent.parent # This is backend/
+RAW_DIR = BASE_DIR / "data" / "raw"
+PROCESSED_DIR = BASE_DIR / "data" / "processed"
 CHUNK_CHAR_SIZE = 2000
 MIN_CHUNK_CHAR = 200
 
