@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
 Polite site scraper for lnmiit.ac.in (updated)
-- Uses hash-based filenames for outputs
-- Resumable crawl via visited.json
-- Respects robots.txt
-- Crawls same-domain links
-- Extracts HTML (trafilatura preferred) and PDF text (pypdf)
-- Saves chunked JSONL files under backend/data/
+- Crawl same-domain HTML and PDF pages
+- Extract HTML text (trafilatura preferred)
+- Extract PDF text (pypdf)
+- Save chunked JSONL files under backend/data/raw/
+- Supports local PDF folder processing (--local-pdf-folder)
 """
 
 import argparse
@@ -27,7 +26,8 @@ from tqdm import tqdm
 from urllib import robotparser
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 try:
     import trafilatura
     _HAS_TRAFILATURA = True
@@ -35,34 +35,29 @@ except Exception:
     _HAS_TRAFILATURA = False
 
 USER_AGENT = "lnmiit-ask-scraper/1.0 (+https://lnmiit.ac.in/)"
-DEFAULT_DELAY = 1.0  # seconds between requests (polite)
+DEFAULT_DELAY = 1.0
 CHUNK_SIZE_CHARS = 2000
 CHUNK_OVERLAP = 200
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "data")  # backend/data
+
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 PDF_DIR = os.path.join(OUTPUT_DIR, "pdfs")
 RAW_DIR = os.path.join(OUTPUT_DIR, "raw")
 VISITED_PATH = os.path.join(OUTPUT_DIR, "visited.json")
+
 ALLOWED_SCHEMES = ("http", "https")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PDF_DIR, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
 session = requests.Session()
 session.headers.update({"User-Agent": USER_AGENT})
-# ensure requests uses certifi CA bundle (fixes macOS/pyenv SSL issues)
 session.verify = certifi.where()
 
-# also set SSL_CERT_FILE for any underlying ssl code in this process
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
+
 def normalize_url_for_dedupe(url: str) -> str:
-    """
-    Normalize URL to scheme://netloc/path  (drops query, params, fragment)
-    Good simple dedupe for most sites.
-    """
     p = urlparse(url)
     normalized = urlunparse((p.scheme, p.netloc, p.path or "/", "", "", ""))
     return normalized.rstrip("/")
@@ -84,7 +79,6 @@ def sanitize_url(url):
     if not p.scheme:
         url = "http://" + url
         p = urlparse(url)
-    # remove fragment for canonicalization
     return p._replace(fragment="").geturl()
 
 
@@ -108,17 +102,17 @@ def allowed_by_robots(rp, url):
 
 def fetch_url(url, timeout=15):
     try:
-        # Add verify=False to this call
-        r = session.get(url, timeout=timeout, verify=False) 
+        r = session.get(url, timeout=timeout, verify=False)
         r.raise_for_status()
-        
-        # Requests will show a warning when verify=False
+
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
         return r
     except Exception as e:
         logging.warning(f"[fetch] Error fetching {url}: {e}")
         return None
+
 
 
 def extract_text_from_html(html, url):
@@ -139,6 +133,7 @@ def extract_text_from_html(html, url):
         text = el.get_text(separator=" ", strip=True)
         if text:
             parts.append(text)
+
     return "\n\n".join(parts).strip()
 
 
@@ -158,6 +153,7 @@ def find_links(html, base_url):
     return links
 
 
+
 def is_pdf_link(url):
     return url.lower().split("?")[0].endswith(".pdf")
 
@@ -166,11 +162,14 @@ def download_pdf(url, out_dir=PDF_DIR):
     os.makedirs(out_dir, exist_ok=True)
     safe_name = url_hash(url) + ".pdf"
     local_name = os.path.join(out_dir, safe_name)
+
     if os.path.exists(local_name):
         return local_name
+
     r = fetch_url(url)
     if r is None:
         return None
+
     try:
         with open(local_name, "wb") as f:
             f.write(r.content)
@@ -181,57 +180,123 @@ def download_pdf(url, out_dir=PDF_DIR):
 
 
 def extract_text_from_pdf(local_pdf_path):
+    """
+    Extract text from PDF using normal extraction first.
+    If no text found (scanned PDF), fallback to OCR.
+    """
     try:
+        # Try normal extraction
         reader = PdfReader(local_pdf_path)
         texts = []
         for page in reader.pages:
             try:
-                texts.append(page.extract_text() or "")
+                text = page.extract_text() or ""
+                texts.append(text)
             except Exception:
                 continue
-        return "\n\n".join(texts).strip()
+
+        extracted = "\n\n".join(texts).strip()
+
+        # If extracted text is empty, run OCR
+        if not extracted:
+            logging.info(f"OCR fallback triggered for: {local_pdf_path}")
+            from pdf2image import convert_from_path
+            import pytesseract
+
+            pages = convert_from_path(local_pdf_path)
+            ocr_texts = []
+            for i, pg in enumerate(pages):
+                logging.info(f"OCR on page {i+1}/{len(pages)}")
+                ocr_texts.append(pytesseract.image_to_string(pg))
+
+            extracted = "\n\n".join(ocr_texts).strip()
+
+        return extracted
+
     except Exception as e:
         logging.warning(f"[pdf] extraction failed for {local_pdf_path}: {e}")
         return ""
 
 
+
+
+
 def chunk_text(text, chunk_size=CHUNK_SIZE_CHARS, overlap=CHUNK_OVERLAP):
     if not text:
         return []
+
     text = text.replace("\r\n", "\n").strip()
     chunks = []
     start = 0
     L = len(text)
+
     while start < L:
         end = start + chunk_size
         chunk = text[start:end].strip()
         if chunk:
             chunks.append(chunk)
+
         start = end - overlap
         if start < 0:
             start = 0
+
     return chunks
 
 
 def write_chunks_jsonl(chunks, metadata):
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    # Use SHA1 hash of URL as base filename
     url = metadata.get("url", "")
     fname_base = url_hash(url)
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename = os.path.join(RAW_DIR, f"{fname_base}_{ts}.jsonl")
+
     with open(filename, "w", encoding="utf-8") as fh:
         for i, chunk in enumerate(chunks):
             record = {
                 "id": f"{metadata.get('url','')}_chunk_{i}",
                 "text": chunk,
-                "meta": {
-                    **metadata,
-                    "chunk_index": i
-                }
+                "meta": {**metadata, "chunk_index": i}
             }
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     return filename
+
+def process_local_pdfs(folder_path):
+    logging.info(f"Scanning local folder: {folder_path}")
+
+    for fname in os.listdir(folder_path):
+        if not fname.lower().endswith(".pdf"):
+            continue
+
+        pdf_path = os.path.join(folder_path, fname)
+        logging.info(f"\n=== Processing PDF: {fname} ===")
+        logging.info(f"Path: {pdf_path}")
+
+        text = extract_text_from_pdf(pdf_path)
+
+        if not text:
+            logging.warning("No text extracted from this PDF.")
+            continue
+
+        # Show extracted text length
+        logging.info(f"Extracted text length: {len(text)} characters")
+
+        # Show preview
+        preview = text[:300].replace("\n", " ")
+        logging.info(f"Preview: {preview}...")
+
+        # Chunk the text
+        chunks = chunk_text(text)
+        logging.info(f"Total chunks created: {len(chunks)}")
+
+        # Save JSONL
+        metadata = {
+            "url": f"file://{pdf_path}",
+            "title": fname,
+            "fetched_at": datetime.utcnow().isoformat(),
+            "type": "pdf"
+        }
+
+        out_path = write_chunks_jsonl(chunks, metadata)
+        logging.info(f"Saved JSONL: {out_path}")
 
 
 def load_visited():
@@ -241,7 +306,7 @@ def load_visited():
                 data = json.load(fh)
                 return set(data.get("visited", []))
     except Exception:
-        logging.warning("Could not load visited.json, starting fresh")
+        pass
     return set()
 
 
@@ -249,8 +314,8 @@ def save_visited(visited_set):
     try:
         with open(VISITED_PATH, "w", encoding="utf-8") as fh:
             json.dump({"visited": list(visited_set)}, fh, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.warning(f"Failed to write visited.json: {e}")
+    except Exception:
+        pass
 
 
 def crawl(seed_url, max_pages=200, max_depth=3, delay=DEFAULT_DELAY, verbose=True, resume=True):
@@ -260,6 +325,7 @@ def crawl(seed_url, max_pages=200, max_depth=3, delay=DEFAULT_DELAY, verbose=Tru
 
     rp = get_robots_parser(seed_url)
     visited = load_visited() if resume else set()
+
     q = deque()
     q.append((seed_url, 0))
     pages_crawled = 0
@@ -270,21 +336,16 @@ def crawl(seed_url, max_pages=200, max_depth=3, delay=DEFAULT_DELAY, verbose=Tru
     while q and pages_crawled < max_pages:
         url, depth = q.popleft()
         normalized = normalize_url_for_dedupe(url)
+
         if normalized in visited:
             continue
-
-        # enforce depth
         if depth > max_depth:
             continue
-
         if not allowed_by_robots(rp, url):
-            if verbose:
-                logging.info(f"[robots] skipping {url}")
             visited.add(normalized)
             save_visited(visited)
             continue
 
-        # rate limit
         time.sleep(delay)
 
         r = fetch_url(url)
@@ -294,73 +355,89 @@ def crawl(seed_url, max_pages=200, max_depth=3, delay=DEFAULT_DELAY, verbose=Tru
             continue
 
         content_type = r.headers.get("Content-Type", "")
+
+        # PDF
         if is_pdf_link(url) or "application/pdf" in content_type.lower():
             local_pdf = download_pdf(url)
-            if not local_pdf:
-                visited.add(normalized)
-                save_visited(visited)
-                continue
-            text = extract_text_from_pdf(local_pdf)
-            if not text:
-                visited.add(normalized)
-                save_visited(visited)
-                continue
-            metadata = {"url": url, "title": os.path.basename(local_pdf), "fetched_at": datetime.utcnow().isoformat(), "type": "pdf"}
-            chunks = chunk_text(text)
-            if chunks:
-                fname = write_chunks_jsonl(chunks, metadata)
-                out_files.append(fname)
-                pages_crawled += 1
-                if pbar: pbar.update(1)
+            if local_pdf:
+                text = extract_text_from_pdf(local_pdf)
+                if text:
+                    metadata = {
+                        "url": url,
+                        "title": os.path.basename(local_pdf),
+                        "fetched_at": datetime.utcnow().isoformat(),
+                        "type": "pdf"
+                    }
+                    chunks = chunk_text(text)
+                    if chunks:
+                        fname = write_chunks_jsonl(chunks, metadata)
+                        out_files.append(fname)
+                        pages_crawled += 1
+                        if pbar:
+                            pbar.update(1)
+
             visited.add(normalized)
             save_visited(visited)
             continue
 
+        # HTML
         html = r.text
         text = extract_text_from_html(html, url)
         if text:
-            title = ""
-            try:
-                soup = BeautifulSoup(html, "html.parser")
-                if soup.title and soup.title.string:
-                    title = soup.title.string.strip()
-            except Exception:
-                pass
-            metadata = {"url": url, "title": title, "fetched_at": datetime.utcnow().isoformat(), "type": "html"}
+            metadata = {
+                "url": url,
+                "title": "",
+                "fetched_at": datetime.utcnow().isoformat(),
+                "type": "html"
+            }
             chunks = chunk_text(text)
             if chunks:
                 fname = write_chunks_jsonl(chunks, metadata)
                 out_files.append(fname)
                 pages_crawled += 1
-                if pbar: pbar.update(1)
+                if pbar:
+                    pbar.update(1)
 
-        # queue same-domain links
+        # Add links
         links = find_links(html, url)
         for link in links:
             if is_same_domain(seed_netloc, link):
-                normalized_link = normalize_url_for_dedupe(link)
-                if normalized_link not in visited:
+                n = normalize_url_for_dedupe(link)
+                if n not in visited:
                     q.append((link, depth + 1))
 
-        # persist visited immediately so progress isn't lost
         visited.add(normalized)
         save_visited(visited)
 
     if pbar:
         pbar.close()
+
     return out_files
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Polite resuming site scraper")
-    parser.add_argument("--seed", required=True, help="Seed URL, e.g., https://lnmiit.ac.in/")
-    parser.add_argument("--max-pages", type=int, default=200, help="Max number of pages to fetch")
-    parser.add_argument("--max-depth", type=int, default=3, help="Max crawl depth")
-    parser.add_argument("--delay", type=float, default=DEFAULT_DELAY, help="Delay between requests (seconds)")
-    parser.add_argument("--no-resume", action="store_true", help="Start fresh (ignore visited.json)")
+    parser = argparse.ArgumentParser(description="Polite site scraper")
+    parser.add_argument("--seed", help="Seed URL for crawling")
+    parser.add_argument("--local-pdf-folder", help="Path to folder containing local PDFs")
+    parser.add_argument("--max-pages", type=int, default=200)
+    parser.add_argument("--max-depth", type=int, default=3)
+    parser.add_argument("--delay", type=float, default=DEFAULT_DELAY)
+    parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
 
     logging.info("Trafilatura available: %s", _HAS_TRAFILATURA)
+
+    # Local PDF mode
+    if args.local_pdf_folder:
+        logging.info(f"Processing local PDFs in folder: {args.local_pdf_folder}")
+        process_local_pdfs(args.local_pdf_folder)
+        logging.info("Completed local PDF processing.")
+        exit(0)
+
+    # If not local mode, seed is required
+    if not args.seed:
+        parser.error("--seed is required unless you use --local-pdf-folder")
+
+    # Crawl mode
     out = crawl(
         args.seed,
         max_pages=args.max_pages,
@@ -369,4 +446,5 @@ if __name__ == "__main__":
         verbose=True,
         resume=not args.no_resume,
     )
+
     logging.info("Wrote %d files to %s", len(out), OUTPUT_DIR)
