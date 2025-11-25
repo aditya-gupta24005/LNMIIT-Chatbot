@@ -1,60 +1,116 @@
-# generator_gemini.py
 import os
+import sys
+import re
+import textwrap
+import google.generativeai as genai
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
+
+try:
+    from .retriever import search
+except ImportError:
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from retriever import search
+    except ImportError:
+        try:
+            from rag.retriever import search
+        except ImportError:
+            print("Error: Could not import 'search' from retriever.")
+            sys.exit(1)
+
 os.environ["GRPC_VERBOSITY"] = "NONE"
 os.environ["GRPC_ENABLE_FORK_SUPPORT"] = "0"
-import google.generativeai as genai
-from retriever import search
-from textwrap import shorten
 
-# Configure Gemini API key
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+API_KEY = os.environ.get("GEMINI_API_KEY")
+if not API_KEY:
+    print("CRITICAL WARNING: GEMINI_API_KEY is missing.")
+
+genai.configure(api_key=API_KEY)
 
 MODEL_NAME = "gemini-2.5-flash"
 
-SYSTEM_PROMPT = (
-    "You are a concise and accurate assistant for LNMIIT. "
-    "Use only the retrieved sources to answer the question. "
-    "Cite the source numbers [1], [2], etc. after factual statements. "
-    "If the answer isn't supported by sources, say you don't know."
+SYSTEM_INSTRUCTION = (
+    "If the user asks 'Who are you?' or any equivalent question about your identity, reply only with: 'I am an assistant for LNMIIT.' "
+    "Dont say based on the provided context or context above, just say i don't know that information"
+    "Dont give half or incomplete information"
+    "The doaa or dean of academic affairs is Dr Vikas Gupta"
+    "You are a strict and concise assistant for LNMIIT. "
+    "Your responses must not exceed 5 sentences or 120 words under any circumstance. "
+    "If you provide a list, include only the top 3 items. "
+    "Avoid unnecessary explanation, speculation, or filler. "
+    "Remain factual, context-bound, and do not invent information not supported by the user's input or established LNMIIT details."
+)
+
+SAFETY_SETTINGS = {
+    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+}
+
+model = genai.GenerativeModel(
+    model_name=MODEL_NAME,
+    system_instruction=SYSTEM_INSTRUCTION
 )
 
 def build_context(results):
     parts = []
-    for i, r in enumerate(results, start=1):
-        title = r.get("title") or r.get("url")
-        url = r.get("url", "")
-        content = shorten(r.get("content", ""), width=1500, placeholder=" ...")
-        parts.append(f"[{i}] {title}\n{url}\n{content}")
+    for r in results:
+        content = r.get("content", "").strip()
+        if not content:
+            continue
+        content = textwrap.shorten(content, width=2500, placeholder=" ...")
+        parts.append(content)
     return "\n\n".join(parts)
 
-def answer_with_gemini(query: str, top_k: int = 5, temperature: float = 0.0):
-    # 1) Retrieve from your local index
-    results = search(query, top_k=top_k)
+def enforce_short_answer(text):
+    text = text.strip()
+    sentences = re.split(r'(?<=[.!?]) +', text)
+    if len(sentences) > 5:
+        text = " ".join(sentences[:5])
+    words = text.split()
+    if len(words) > 120:
+        text = " ".join(words[:120]) + "..."
+    return text
 
-    # 2) Build a combined prompt
-    context = build_context(results)
-    user_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"User question: {query}\n\n"
-        f"Relevant sources:\n{context}\n\n"
-        "Answer clearly, cite sources, and keep the answer concise."
+def answer_with_gemini(query, top_k=5):
+    try:
+        results = search(query, top_k=top_k)
+    except Exception as e:
+        return f"Error during retrieval: {e}", []
+
+    if not results:
+        return "I couldn't find relevant information.", []
+
+    context_str = build_context(results)
+    prompt = (
+        f"USER QUESTION: {query}\n\n"
+        f"CONTEXT:\n{context_str}\n\n"
+        "Based strictly on the context above, answer concisely."
     )
 
-    # 3) Send to Gemini
-    model = genai.GenerativeModel(MODEL_NAME)
-    response = model.generate_content(user_prompt, generation_config={
-        "temperature": temperature,
-        "max_output_tokens": 512,
-    })
-
-    # 4) Extract text response
-    return response.text, results
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.3, "max_output_tokens": 2000},
+            safety_settings=SAFETY_SETTINGS
+        )
+        if not response.candidates:
+            return "Error: No response returned.", []
+        return enforce_short_answer(response.text), results
+    except Exception as e:
+        return f"Error generating response: {str(e)}", []
 
 if __name__ == "__main__":
-    q = input("Ask me something: ")
-    ans, srcs = answer_with_gemini(q)
-    print("\n ANSWER \n")
-    print(ans)
-    print("\n SOURCES\n")
-    for i, s in enumerate(srcs, start=1):
-        print(f"[{i}] {s['title']} - {s['url']} (score={s['score']:.3f})")
+    while True:
+        try:
+            q = input("\nAsk me something about LNMIIT (or 'exit'): ").strip()
+            if q.lower() in ["exit", "quit"]:
+                break
+            if q:
+                ans = answer_with_gemini(q)
+                print("\nANSWER\n")
+                print(ans)
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            break
