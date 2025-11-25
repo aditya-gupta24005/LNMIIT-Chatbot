@@ -1,28 +1,74 @@
-# retriever.py
-import faiss, json, numpy as np
-from sentence_transformers import SentenceTransformer
+import os
+import numpy as np
 from pathlib import Path
-BASE_DIR = Path(__file__).parent.parent # This is backend/
-INDEX_DIR = BASE_DIR / "data" / "indexed_data"
-model = SentenceTransformer("all-MiniLM-L6-v2")
-index = faiss.read_index(str(INDEX_DIR / "faiss.index"))
-with open(INDEX_DIR / "meta.json", "r", encoding="utf-8") as f:
-    docs = json.load(f)
+from sentence_transformers import SentenceTransformer
+from pymilvus import connections, Collection, utility
+
+# --- CONFIG ---
+# Assuming this file is in backend/ directory
+BASE_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = (BASE_DIR / "data" / "milvus.db").resolve()
+print("Using DB:", DB_PATH)
+COLLECTION_NAME = "lnmiit_rag"
+EMBED_MODEL = "all-MiniLM-L6-v2"
+
+# Load model once to avoid reloading on every request
+print("Loading Embedding Model...")
+model = SentenceTransformer(EMBED_MODEL)
+
+def connect_milvus():
+    """Helper to ensure connection exists"""
+    if not connections.has_connection("default"):
+        print(f"Connecting to Milvus: {DB_PATH}")
+        connections.connect("default", uri=str(DB_PATH))
 
 def search(query, top_k=5):
+    connect_milvus()
+    
+    if not utility.has_collection(COLLECTION_NAME):
+        print(f"Collection {COLLECTION_NAME} not found.")
+        return []
+
+    collection = Collection(COLLECTION_NAME)
+    collection.load()  # Load into memory
+
+    # 1. Embed Query
     q_emb = model.encode([query], convert_to_numpy=True)
-    q_emb = q_emb / (np.linalg.norm(q_emb, axis=1, keepdims=True)+1e-10)
-    scores, idxs = index.search(q_emb.astype("float32"), top_k)
-    results = []
-    for score, idx in zip(scores[0], idxs[0]):
-        d = docs[idx]
-        results.append({"score": float(score), "id": d.get("id"), "title": d.get("title"), "url": d.get("url"), "content": d.get("content")})
-    return results
+    
+    # 2. Normalize (for Inner Product/Cosine match)
+    norms = np.linalg.norm(q_emb, axis=1, keepdims=True)
+    q_emb = q_emb / (norms + 1e-10)
+
+    # 3. Search Milvus
+    search_params = {"metric_type": "IP", "params": {"level": 2}}
+    results = collection.search(
+        data=q_emb,
+        anns_field="embedding",
+        param=search_params,
+        limit=top_k,
+        output_fields=["content", "url", "title"]
+    )
+
+    # 4. Format results for the Generator
+    formatted_results = []
+    for hits in results:
+        for hit in hits:
+            formatted_results.append({
+                "score": float(hit.score),
+                "id": hit.id,
+                "title": hit.entity.get("title"),
+                "url": hit.entity.get("url"),
+                "content": hit.entity.get("content")
+            })
+            
+    return formatted_results
 
 if __name__ == "__main__":
+    # Test block
     import sys
-    q = " ".join(sys.argv[1:]) or "anti ragging helpline"
-    res = search(q, top_k=5)
+    q = " ".join(sys.argv[1:]) or "hostel facilities"
+    print(f"Searching for: {q}")
+    res = search(q, top_k=3)
     for r in res:
-        print(f"[{r['score']:.3f}] {r['title']} - {r['url']}")
-        print(r['content'][:400].replace("\n"," ") + "...\n")
+        print(f"[{r['score']:.3f}] {r['title']}")
+        print(f"{r['content'][:100]}...\n")
