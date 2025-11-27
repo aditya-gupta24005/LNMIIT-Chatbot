@@ -6,3 +6,8 @@ python-dateutil
 tqdm
 pypdf
 certifi
+google-generativeai
+sentence-transformers
+numpy
+torch
+trafilatura
