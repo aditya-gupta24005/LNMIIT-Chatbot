@@ -1,4 +1,3 @@
-````markdown
 # LNMIIT Chatbot (RAG-based)
 
 A Retrieval-Augmented Generation (RAG) chatbot designed to answer queries about **The LNM Institute of Information Technology (LNMIIT)**.
