@@ -6,8 +6,11 @@ __pycache__/
 # C extensions
 *.so
 #Data
-data
-
+backend/data/indexed_data
+backend/data/pdfs
+backend/data/processed
+backend/data/raw
+backend/data/visited.json
 # Distribution / packaging
 .Python
 build/
