@@ -11,3 +11,5 @@ sentence-transformers
 numpy
 torch
 trafilatura
+pymilvus
+milvus-lite
