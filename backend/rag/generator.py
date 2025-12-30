@@ -4,6 +4,7 @@ import re
 import textwrap
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google.api_core.exceptions import ResourceExhausted
 
 try:
     from .retriever import search
@@ -98,6 +99,8 @@ def answer_with_gemini(query, top_k=5):
         if not response.candidates:
             return "Error: No response returned.", []
         return enforce_short_answer(response.text), results
+    except ResourceExhausted:
+        return "Service is currently overloaded (Rate Limit Reached). Please try again later.", []
     except Exception as e:
         return f"Error generating response: {str(e)}", []
 
